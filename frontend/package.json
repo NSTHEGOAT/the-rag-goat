@@ -1,0 +1,14 @@
+{
+  "name": "local-rag-frontend",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "14.2.21",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}
