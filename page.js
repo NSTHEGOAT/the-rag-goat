@@ -1,125 +1,98 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../lib/api";
 
-/* Render answer text, replacing [n] with clickable highlighter chips. */
-function AnswerText({ text, turnId, citations }) {
-  const valid = new Set(citations.map((c) => c.ref));
-  const parts = text.split(/(\[\d+\])/g);
-  return (
-    <div className="turn-a">
-      {parts.map((part, i) => {
-        const m = part.match(/^\[(\d+)\]$/);
-        if (m && valid.has(Number(m[1]))) {
-          const ref = Number(m[1]);
-          return (
-            <button
-              key={i}
-              className="cite-chip"
-              title={`Jump to source [${ref}]`}
-              onClick={() => {
-                const el = document.getElementById(`cite-${turnId}-${ref}`);
-                if (el) {
-                  el.scrollIntoView({ behavior: "smooth", block: "center" });
-                  el.classList.add("flash");
-                  setTimeout(() => el.classList.remove("flash"), 1200);
-                }
-              }}
-            >
-              {ref}
-            </button>
-          );
-        }
-        return <span key={i}>{part}</span>;
-      })}
-    </div>
-  );
-}
-
-function CitationCard({ turnId, c }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div id={`cite-${turnId}-${c.ref}`} className={`cite-card ${open ? "open" : ""}`}>
-      <div className="cite-head">
-        <span className="cite-ref">[{c.ref}]</span>
-        <span>{c.source}{c.page ? ` · p.${c.page}` : ""}</span>
-        <span>{c.chunk_id}</span>
-        <span>dist {c.distance}</span>
-      </div>
-      <div className="cite-snippet">{c.snippet}</div>
-      <button className="cite-toggle" onClick={() => setOpen(!open)}>
-        {open ? "− collapse" : "+ full chunk"}
-      </button>
-    </div>
-  );
-}
-
-export default function Chat({ ready }) {
-  const [turns, setTurns] = useState([]);
-  const [input, setInput] = useState("");
+export default function Sidebar({ docs, health, error, onRefresh, onError }) {
+  const fileRef = useRef(null);
+  const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
 
-  async function ask() {
-    const question = input.trim();
-    if (!question || busy) return;
-    setInput("");
-    setError(null);
+  async function upload(files) {
+    const accepted = [...files].filter((f) => /\.(pdf|md|markdown|txt)$/i.test(f.name));
+    if (!accepted.length) {
+      onError("Only .pdf, .md and .txt files are supported.");
+      return;
+    }
     setBusy(true);
     try {
-      const res = await api.chat(question);
-      setTurns((t) => [...t, { id: Date.now(), question, ...res }]);
+      await api.ingest(accepted);
+      onError(null);
+      await onRefresh();
     } catch (e) {
-      setError(e.message);
+      onError(e.message);
     } finally {
       setBusy(false);
     }
   }
 
+  async function remove(source) {
+    try {
+      await api.deleteDocument(source);
+      await onRefresh();
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
   return (
-    <>
-      <div className="scroll">
-        <div className="column">
-          {turns.length === 0 && !busy && (
-            <p className="notice">
-              {ready
-                ? "Ask anything about your documents. Every claim in the answer carries a [n] mark — click it to jump to the exact passage it came from."
-                : "Upload a PDF or Markdown file in the sidebar to build your corpus, then ask away."}
-            </p>
-          )}
-          {turns.map((t) => (
-            <div key={t.id}>
-              <div className="turn-q">{t.question}</div>
-              <AnswerText text={t.answer} turnId={t.id} citations={t.citations} />
-              <div className="sources-label">Retrieved sources</div>
-              {t.citations.map((c) => (
-                <CitationCard key={c.ref} turnId={t.id} c={c} />
-              ))}
-            </div>
-          ))}
-          {busy && <div className="thinking">retrieving + generating</div>}
-          {error && <div className="error">{error}</div>}
+    <aside className="sidebar">
+      <div>
+        <div className="wordmark">
+          local<em>rag</em>
         </div>
+        <div className="tagline">pdf + md → chroma → ollama</div>
       </div>
 
-      <div className="composer">
-        <div className="composer-inner">
-          <textarea
-            value={input}
-            placeholder="Ask your documents…"
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                ask();
-              }
-            }}
-          />
-          <button className="send" disabled={busy || !input.trim()} onClick={ask}>
-            Ask
-          </button>
-        </div>
+      <div className="status">
+        <span className={`dot ${health ? "ok" : ""}`} />
+        {health
+          ? `${health.chunks} chunks · ${health.llm_model}`
+          : "backend offline — start uvicorn"}
       </div>
-    </>
+
+      <div
+        className={`dropzone ${drag ? "drag" : ""}`}
+        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => { e.preventDefault(); setDrag(false); upload(e.dataTransfer.files); }}
+      >
+        {busy ? (
+          <span className="thinking">embedding</span>
+        ) : (
+          <>
+            Drop PDF or Markdown here
+            <br />
+            <button onClick={() => fileRef.current?.click()}>Browse files</button>
+          </>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          accept=".pdf,.md,.markdown,.txt"
+          hidden
+          onChange={(e) => { upload(e.target.files); e.target.value = ""; }}
+        />
+      </div>
+
+      {error && <div className="error">{error}</div>}
+
+      <div className="doc-list">
+        {docs.length === 0 && (
+          <div className="empty-docs">
+            No documents yet. The corpus is empty — everything starts with an upload.
+          </div>
+        )}
+        {docs.map((d) => (
+          <div className="doc-row" key={d.source}>
+            <span className="doc-name">{d.source}</span>
+            <span className="doc-chunks">{d.chunks} chunks</span>
+            <button className="doc-del" title={`Remove ${d.source}`} onClick={() => remove(d.source)}>
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+    </aside>
   );
 }
